@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include NOTICE
+include THIRD_PARTY_NOTICES.md
+recursive-include tools *.py
+recursive-include licenses *.txt
+recursive-include src/vllm_ascend_trianglemix/_licenses *
+recursive-include src/vllm_ascend_trianglemix/_native *
+global-exclude __pycache__
+global-exclude *.py[cod]

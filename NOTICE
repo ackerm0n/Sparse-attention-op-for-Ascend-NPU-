@@ -1,0 +1,10 @@
+vLLM-Ascend TriangleMix
+Copyright 2026 TriangleMix contributors.
+
+This source distribution includes CANN-derived and generated materials
+copyrighted by Huawei Technologies Co., Ltd. Those portions retain their
+upstream notices and are licensed under the CANN Open Software License
+Agreement Version 2.0. See THIRD_PARTY_NOTICES.md and
+licenses/CANN-OSL-2.0.txt.
+
+All other portions are made available under the Apache License, Version 2.0.

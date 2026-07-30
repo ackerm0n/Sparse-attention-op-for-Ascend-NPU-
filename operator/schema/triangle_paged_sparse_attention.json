@@ -1,0 +1,91 @@
+[
+  {
+    "op": "TrianglePagedSparseAttention",
+    "input_desc": [
+      {
+        "name": "query",
+        "param_type": "required",
+        "format": ["ND"],
+        "type": ["bf16"]
+      },
+      {
+        "name": "key_cache",
+        "param_type": "required",
+        "format": ["ND"],
+        "type": ["bf16"]
+      },
+      {
+        "name": "value_cache",
+        "param_type": "required",
+        "format": ["ND"],
+        "type": ["bf16"]
+      },
+      {
+        "name": "block_table",
+        "param_type": "required",
+        "format": ["ND"],
+        "type": ["int32"]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "attention_out",
+        "param_type": "required",
+        "format": ["ND"],
+        "type": ["bf16"]
+      }
+    ],
+    "attr": [
+      {
+        "name": "query_start",
+        "param_type": "required",
+        "type": "int"
+      },
+      {
+        "name": "seq_len",
+        "param_type": "required",
+        "type": "int"
+      },
+      {
+        "name": "prompt_len",
+        "param_type": "required",
+        "type": "int"
+      },
+      {
+        "name": "scale",
+        "param_type": "required",
+        "type": "float"
+      },
+      {
+        "name": "q_tile",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 32
+      },
+      {
+        "name": "page_size",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 128
+      },
+      {
+        "name": "sink_tokens",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 8
+      },
+      {
+        "name": "local_window",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 512
+      },
+      {
+        "name": "dense_tail",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 128
+      }
+    ]
+  }
+]
