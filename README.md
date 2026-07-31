@@ -3,8 +3,8 @@
 ## 1. 项目总览
 
 本项目在昇腾 NPU 上实现 [TriangleMix](https://arxiv.org/abs/2507.21526)
-论文提出的 Triangle 稀疏注意力，并以独立 wheel 插件接入
-vLLM-Ascend。昇腾推理栈目前缺少能够真正跳过稀疏区域计算的
+论文提出的 Triangle 稀疏注意力，并作为 vLLM-Ascend 内置的可选
+attention 路径接入。昇腾推理栈目前缺少能够真正跳过稀疏区域计算的
 TriangleMix 算子；仅在 Python 层生成 mask，或先裁剪、重排 token，都不能
 稳定兑现理论收益。因此本项目实现了直接读取 paged KV cache 的高性能
 CANN 算子。
@@ -20,68 +20,23 @@ local window，跳过中间无贡献的 Q-K 区域。本实现的稀疏区域为
 1、graph capture、不支持的 shape、版本和并行模式均自动回退官方
 Fused Infer Attention（FIA）。
 
-## 2. 插件安装
+## 2. vLLM-Ascend 原生接入
 
-发布物是独立的 `vllm_ascend_trianglemix` wheel。它通过
-`vllm.general_plugins` 的 `trianglemix` 入口自动注册，不包含顶层
-`vllm/` 或 `vllm_ascend/` 文件，因此不会覆盖官方安装。
+实现以最小差异作为 vLLM-Ascend 的原生可选路径：
 
-插件面向 vLLM-Ascend 0.23 的以下窄接口：
+- `vllm_ascend/attention/trianglemix.py` 提供配置、计划、fallback 原因和
+  性能计数；
+- `AscendCommonAttentionMetadata` 传递 scheduler 持有的最终 prompt 长度；
+- `AscendAttentionMetadataBuilder` 每个 scheduler step 只生成一次不可变
+  TriangleMix 计划；
+- `AscendAttentionBackendImpl` 仅在选中层和受支持的 prefill 请求上调用
+  自定义路径，其他请求保持官方 FIA；
+- `csrc/attention/triangle_paged_sparse_attention` 随 vLLM-Ascend 的标准
+  CANN 构建流程编译，并注册为
+  `torch.ops._C_ascend.npu_triangle_paged_sparse_attention`。
 
-- `NPUModelRunner._build_attention_metadata`：附加 scheduler 持有的最终
-  prompt 长度和 step token；
-- `AscendAttentionMetadataBuilder.build`：为当前 step 缓存一次不可变路由
-  metadata；
-- `AscendAttentionBackendImpl.forward`：记录 layer name 并判断是否为选定层；
-- `AscendAttentionBackendImpl.forward_fused_infer_attention`：符合条件的
-  prefill 调用自定义单次-launch算子，其余调用原样转发官方 FIA。
-
-wheel 同时携带私有 OPP tree 和 Torch adapter，只在功能启用后延迟加载。
-安装、升级或卸载后必须重启全部 vLLM worker。
-
-### 直接安装
-
-```bash
-python -m pip install \
-  vllm_ascend_trianglemix-0.1.0-cp310-cp310-linux_aarch64.whl
-
-export VLLM_PLUGINS=ascend,trianglemix
-```
-
-### 从源码构建
-
-在下文指定的昇腾环境中构建。CANN 算子和 adapter 必须在 AArch64
-目标机上生成。
-
-```bash
-# 1. 构建 CANN package
-cd operator
-bash build.sh
-cd ..
-
-# 2. 将算子安装到隔离 OPP staging root
-export OPP_STAGE=/absolute/path/to/empty/opp-stage
-mkdir -p "$OPP_STAGE"
-operator/build_out/custom_opp_ubuntu_aarch64.run \
-  --quiet \
-  --install-path "$OPP_STAGE"
-
-# 3. 准备 wheel 构建环境
-export VLLM_ASCEND_SRC=/path/to/clean/vllm-ascend
-python3.10 -m venv .venv-trianglemix
-. .venv-trianglemix/bin/activate
-python -m pip install "build==1.3.0" "pyproject-hooks==1.2.0"
-
-# 4. 重建 adapter、组装 wheel 并执行 clean-install 审计
-python package/tools/release_wheel_pipeline.py \
-  --vllm-ascend-src "$VLLM_ASCEND_SRC" \
-  --opp-root "$OPP_STAGE" \
-  --output-dir /path/to/empty/release-dist \
-  --report /path/to/new/release-wheel-report.json
-```
-
-流水线会重建并 strip adapter，检查 AArch64 ELF、私有路径泄漏和非法上游
-覆盖，并在临时环境中执行安装/卸载审计。
+该路径默认关闭。推荐通过 `additional_config.trianglemix` 显式启用；
+环境变量仅作为迁移期兼容接口。
 
 ## 3. CANN 算子说明
 
@@ -121,8 +76,8 @@ QK/PV，并复用 CANN 9.0.1 FIA 的 paged block-table 地址映射。被稀疏�
   `MTE3_V` event 生命周期；
 - `validEnd=127` 等边界会产生未按 32 字节对齐的 UB 地址：改为 aligned
   base 加显式 bit-mask `Duplicate`；
-- Python 导入存在循环依赖：插件先导入 `vllm_ascend.ops`，再导入
-  `vllm_ascend.attention.attention_v1`；
+- Python 接入必须避免运行时替换类方法：配置、metadata 和 dispatch 均在
+  vLLM-Ascend 原生对象生命周期内完成；
 - 短序列中 launch 和路由开销可能超过节省的计算：使用离线 crossover
   阈值自动回退 FIA，并按 worker/rank 记录每请求 hit、fallback reason、
   routing、launch 和 enqueue 计数。
@@ -143,13 +98,13 @@ QK/PV，并复用 CANN 9.0.1 FIA 的 paged block-table 地址映射。被稀疏�
 | torch_npu | 2.10.0.post2 |
 | 模型 | Qwen3-8B |
 
-插件对上述完整指纹和固定算子几何执行 fail-closed 门禁。其他
-pre/post/dev 版本或混合版本组合不进入自定义路径。
+算子对固定计算几何执行 fail-closed 门禁；不支持的 shape、batch、
+并行模式或运行阶段不会进入自定义路径。
 
 ### 在推理中启用算子
 
-通过 vLLM `additional_config` 启用插件。`strict=true` 表示插件或原生
-算子加载失败时直接报错。
+通过 vLLM `additional_config` 启用原生路径。`strict=true` 表示 CANN
+算子 launch 失败时直接报错；默认行为是回退官方 FIA。
 
 ```python
 from vllm import LLM, SamplingParams
@@ -180,65 +135,26 @@ print(outputs[0].outputs[0].text)
 也可使用兼容环境变量：
 
 ```bash
-export VLLM_PLUGINS=ascend,trianglemix
 export VLLM_ASCEND_ENABLE_TRIANGLE_MIX=1
 export VLLM_ASCEND_TRIANGLE_MIX_LAYERS=5,7,10,15-35
-export VLLM_ASCEND_TRIANGLE_MIX_STRICT=1
-```
-
-手工导入官方 Ascend 模块时应保持以下顺序：
-
-```python
-import vllm_ascend.ops
-import vllm_ascend.attention.attention_v1
 ```
 
 ### 运行测试
 
-以下命令均从项目根目录执行。安装待验证 wheel 后设置：
+从 vLLM-Ascend 仓库根目录执行：
 
 ```bash
-export WHEEL=/absolute/path/to/vllm_ascend_trianglemix-0.1.0-cp310-cp310-linux_aarch64.whl
 export MODEL=/absolute/path/to/Qwen3-8B
 export RESULTS=/absolute/path/to/new-results
-export PROMPT_SOURCE=/absolute/path/to/prompt_source.py
 mkdir -p "$RESULTS"
+pytest -sv tests/ut/attention/a2/test_trianglemix.py
 ```
 
-依次运行 installed-wheel 正确性、短序列 crossover、模型场景和端到端
-TTFT：
-
-```bash
-python -m release_validation.run installed-correctness \
-  --wheel "$WHEEL" \
-  --output "$RESULTS/installed-wheel-correctness.json"
-
-python -m release_validation.run installed-crossover \
-  --wheel "$WHEEL" \
-  --correctness-report "$RESULTS/installed-wheel-correctness.json" \
-  --lengths "512,649,650,1024,2260,2261,8192,8193,8320" \
-  --chunk-sizes "512,2048" \
-  --output "$RESULTS/installed-wheel-crossover.json"
-
-python -m release_validation.run model-smoke \
-  --wheel "$WHEEL" \
-  --model "$MODEL" \
-  --layers "5,7,10,15-35" \
-  --output "$RESULTS/model-smoke.json"
-
-python -m release_validation.run ttft-abba \
-  --wheel "$WHEEL" \
-  --model "$MODEL" \
-  --legacy-script "$PROMPT_SOURCE" \
-  --layers "5,7,10,15-35" \
-  --runner-args-json '["--runs","6","--long-warmup-runs","1","--enforce-eager"]' \
-  --min-gain-percent 9 \
-  --output "$RESULTS/ttft-abba.json"
-```
-
-`model-smoke` 覆盖 eager、graph、prefix cache、chunked prefill、持续
-decode 和 B=1/2/4/8/16 并发。`ttft-abba` 使用 4 个 D-S-S-D cycle，每个
-变体均在独立新进程中运行，避免初始化状态和测试顺序污染。
+路由单测覆盖默认关闭、配置优先级、长序列命中、chunked prefill、
+decode/batch/graph fallback、shape 门禁和 `_C_ascend` out-operator 契约。
+NPU 回归覆盖算子与 FIA reference 的正确性、短序列 crossover、
+prefix cache、持续 decode 和 B=1/2/4/8/16；端到端 TTFT 使用独立进程
+D-S-S-D 配对，避免初始化状态和测试顺序污染。
 
 ## 5. 算子效率数据
 
@@ -254,7 +170,7 @@ fallback 的 TriangleMix 路由：
 | 8192 / 512 | 45.587% |
 | 8320 / 2048 | 51.158% |
 
-端到端 TTFT 使用发布 wheel 和独立进程 D-S-S-D 配对：
+端到端 TTFT 使用原生 vLLM-Ascend 路径和独立进程 D-S-S-D 配对：
 
 | 指标 | 结果 |
 | --- | ---: |
