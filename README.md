@@ -265,33 +265,3 @@ fallback 的 TriangleMix 路由：
 | 实验规模 | 4 cycles，16 个唯一进程 |
 
 注意力微基准用于判断算子和 crossover 路由效率，不能替代端到端 TTFT。
-
-## 6. 发布验证说明
-
-已验证发布 wheel：
-
-```text
-vllm_ascend_trianglemix-0.1.0-cp310-cp310-linux_aarch64.whl
-SHA-256: 087ec84725875a5da77b80631140649d20820cac25a991b923d5393c044c5bff
-```
-
-v0.1.0 验证结果：
-
-- NPU 正确性：8/8 PASS，包含非连续物理页、dense/sparse 边界和
-  caller-owned output；
-- crossover holdout：127 个 cell，0 个 false-positive direct route；
-- model smoke：PASS；128/128 decode step 均走官方路径，自定义 launch
-  为 0；
-- prefix cache、chunked prefill、graph 和 B=1/2/4/8/16 并发门禁：PASS；
-- 本地 CPU/source/release 契约：179/179 PASS；
-- wheel clean-install、卸载、payload、ELF、私有路径和上游文件不变性审计：
-  PASS；
-- 端到端 TTFT 正收益及 bootstrap 检验：PASS。
-
-发布验证以 wheel SHA-256 绑定 correctness、crossover、model smoke 和
-TTFT 报告，不同 wheel 的结果不得混用。不支持的运行场景记录 fallback
-reason，并回退官方 FIA。
-
-原创插件和集成代码采用 Apache-2.0；随包分发的华为 CANN 材料遵循其原始
-版权声明及 CANN Open Software License Agreement 2.0。发布前应审阅
-`LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` 和 wheel 内对应副本。
